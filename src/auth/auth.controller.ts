@@ -27,6 +27,43 @@ const getSessionCookieOptions = (): CookieOptions => {
   };
 };
 
+const resolveBackendCookieDomain = (): string | undefined => {
+  const backendUrl = process.env.BACKEND_URL;
+
+  if (!backendUrl) {
+    return undefined;
+  }
+
+  try {
+    return new URL(backendUrl).hostname;
+  } catch {
+    return undefined;
+  }
+};
+
+const clearCookieEverywhere = (res: Response, name: string) => {
+  const backendDomain = resolveBackendCookieDomain();
+  const domains = [undefined, backendDomain].filter((value, index, self) => self.indexOf(value) === index);
+  const sameSiteVariants: Array<CookieOptions['sameSite']> = ['lax', 'none'];
+  const secureVariants = [false, true];
+
+  domains.forEach((domain) => {
+    sameSiteVariants.forEach((sameSite) => {
+      secureVariants.forEach((secure) => {
+        const options: CookieOptions = {
+          httpOnly: true,
+          path: '/',
+          sameSite,
+          secure,
+          ...(domain ? { domain } : {}),
+        };
+
+        res.clearCookie(name, options);
+      });
+    });
+  });
+};
+
 @Controller('auth')
 export class AuthController {
 
@@ -66,9 +103,8 @@ export class AuthController {
   // 🚪 logout
   @Get('logout')
   logout(@Res() res: Response): void {
-    const { maxAge, ...clearOptions } = getSessionCookieOptions();
-    void maxAge;
-    res.clearCookie('penca-session', clearOptions);
+    clearCookieEverywhere(res, 'penca-session');
+    clearCookieEverywhere(res, 'connect.sid');
     res.json({ message: 'Logged out' });
   }
 }
