@@ -2,6 +2,18 @@ import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import type { Response } from 'express';
 
+const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
+
+const resolveFrontendUrl = (): string => {
+  const frontendUrl = process.env.FRONTEND_URL;
+
+  if (frontendUrl) {
+    return trimTrailingSlash(frontendUrl);
+  }
+
+  return 'http://localhost:4321';
+};
+
 @Controller('auth')
 export class AuthController {
 
@@ -25,8 +37,8 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
     });
     
-    // Redirect to fronted home
-    res.redirect('http://localhost:4321');
+    // Redirect to frontend home
+    res.redirect(resolveFrontendUrl());
   }
 
   // 👀 ver usuario logueado
