@@ -113,6 +113,9 @@ export class WorldcupService {
 
   private readonly knockoutStages: Array<keyof OfficialKnockout> = ['r32', 'r16', 'qf', 'sf', 'final', 'champion'];
 
+  private readonly predictionWebhookUrl =
+    process.env.DISCORD_PREDICTION_WEBHOOK_URL?.trim() || process.env.DISCORD_WEBHOOK_URL?.trim() || '';
+
   constructor(
     @InjectModel(Prediction.name) private readonly predictionModel: Model<Prediction>,
     @InjectModel(OfficialResult.name) private readonly officialResultModel: Model<OfficialResult>,
@@ -608,6 +611,120 @@ export class WorldcupService {
     };
   }
 
+  private getCountryLabel(code: string): string {
+    const normalized = this.normalizeCode(code);
+
+    if (!normalized) {
+      return code;
+    }
+
+    const country = this.countries.find((item) => item.code === normalized);
+
+    if (!country) {
+      return normalized;
+    }
+
+    return `${country.flag} ${country.name}`;
+  }
+
+  private truncateText(value: string, maxLength: number): string {
+    if (value.length <= maxLength) {
+      return value;
+    }
+
+    return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  private formatGroupSummary(groupOrder: GroupOrder): string {
+    const lines = this.groupNames.map((groupName) => {
+      const codes = (groupOrder[groupName] ?? []).map((code) => this.getCountryLabel(code));
+      return `${groupName}: ${codes.join(' | ')}`;
+    });
+
+    return this.truncateText(lines.join('\n'), 1024);
+  }
+
+  private formatKnockoutSummary(knockout: KnockoutPrediction): string {
+    const summaryLines = this.knockoutStages.map((stageKey) => {
+      const picks = knockout[stageKey] ?? [];
+      const preview = picks
+        .slice(0, stageKey === 'r32' ? 6 : stageKey === 'r16' ? 4 : 2)
+        .map((code) => this.getCountryLabel(code))
+        .join(', ');
+
+      return `${stageKey.toUpperCase()}: ${picks.length} picks${preview ? ` | ${preview}` : ''}`;
+    });
+
+    return this.truncateText(summaryLines.join('\n'), 1024);
+  }
+
+  private async sendPredictionWebhook(input: {
+    discordId: string;
+    username: string;
+    payload: PredictionPayload;
+    points: number;
+    updatedAt: string;
+  }): Promise<void> {
+    if (!this.predictionWebhookUrl) {
+      return;
+    }
+
+    const championCode = input.payload.knockout.champion[0];
+    const championLabel = championCode ? this.getCountryLabel(championCode) : 'Sin definir';
+
+    const body = {
+      username: 'Penca Bot',
+      embeds: [
+        {
+          title: 'Nueva prediccion enviada',
+          color: 3447003,
+          description: `**${input.username}** acaba de confirmar su prediccion.`,
+          fields: [
+            {
+              name: 'Usuario',
+              value: `${input.username} (${input.discordId})`,
+              inline: true,
+            },
+            {
+              name: 'Puntaje actual',
+              value: `${input.points} pts`,
+              inline: true,
+            },
+            {
+              name: 'Campeon elegido',
+              value: championLabel,
+              inline: true,
+            },
+            {
+              name: 'Fase de grupos (1-4)',
+              value: this.formatGroupSummary(input.payload.groupOrder),
+            },
+            {
+              name: 'Resumen eliminatoria',
+              value: this.formatKnockoutSummary(input.payload.knockout),
+            },
+          ],
+          timestamp: input.updatedAt,
+          footer: {
+            text: 'Penca uruWhy',
+          },
+        },
+      ],
+    };
+
+    try {
+      await fetch(this.predictionWebhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      // Keep prediction flow healthy even if webhook is unavailable.
+    }
+  }
+
   private async readOfficialResultsRecord(): Promise<OfficialResultRecord | null> {
     const record = await this.officialResultModel.findOne({ key: 'active' }).lean<OfficialResultRecord>().exec();
     return record ?? null;
@@ -698,11 +815,21 @@ export class WorldcupService {
     payload: Record<string, unknown>;
   }): Promise<StoredPrediction> {
     const validatedPayload = this.validatePayload(input.payload);
-    return this.upsertPrediction({
+    const saved = await this.upsertPrediction({
       discordId: input.discordId,
       username: input.username,
       payload: validatedPayload,
     });
+
+    void this.sendPredictionWebhook({
+      discordId: input.discordId,
+      username: input.username,
+      payload: validatedPayload,
+      points: saved.points,
+      updatedAt: saved.updatedAt || new Date().toISOString(),
+    });
+
+    return saved;
   }
 
   async saveOfficialResults(input: {
