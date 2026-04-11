@@ -1,6 +1,7 @@
 import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import type { CookieOptions } from 'express';
+import type { Request } from 'express';
 import type { Response } from 'express';
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
@@ -41,9 +42,16 @@ const resolveBackendCookieDomain = (): string | undefined => {
   }
 };
 
-const clearCookieEverywhere = (res: Response, name: string) => {
+const resolveCookieDomains = (req: Request): Array<string | undefined> => {
+  const requestHost = req.hostname?.trim() || undefined;
   const backendDomain = resolveBackendCookieDomain();
-  const domains = [undefined, backendDomain].filter((value, index, self) => self.indexOf(value) === index);
+
+  return [undefined, requestHost, backendDomain].filter((value, index, self) => self.indexOf(value) === index);
+};
+
+const clearCookieEverywhere = (req: Request, res: Response, name: string) => {
+  const domains = resolveCookieDomains(req);
+  const expiredDate = new Date(0);
   const sameSiteVariants: Array<CookieOptions['sameSite']> = ['lax', 'none'];
   const secureVariants = [false, true];
 
@@ -59,6 +67,11 @@ const clearCookieEverywhere = (res: Response, name: string) => {
         };
 
         res.clearCookie(name, options);
+        res.cookie(name, '', {
+          ...options,
+          expires: expiredDate,
+          maxAge: 0,
+        });
       });
     });
   });
@@ -102,9 +115,34 @@ export class AuthController {
 
   // 🚪 logout
   @Get('logout')
-  logout(@Res() res: Response): void {
-    clearCookieEverywhere(res, 'penca-session');
-    clearCookieEverywhere(res, 'connect.sid');
+  async logout(@Req() req: Request, @Res() res: Response): Promise<void> {
+    await new Promise<void>((resolve) => {
+      req.logout((error) => {
+        if (error) {
+          resolve();
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      const sessionRequest = req as Request & { session?: { destroy: (callback: (error?: unknown) => void) => void } };
+
+      if (!sessionRequest.session) {
+        resolve();
+        return;
+      }
+
+      sessionRequest.session.destroy(() => resolve());
+    });
+
+    clearCookieEverywhere(req, res, 'penca-session');
+    clearCookieEverywhere(req, res, 'connect.sid');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json({ message: 'Logged out' });
   }
 }
