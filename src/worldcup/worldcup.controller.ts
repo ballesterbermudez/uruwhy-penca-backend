@@ -1,19 +1,21 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Put, Req, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Put, Req, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { WorldcupService } from './worldcup.service';
 
 @Controller('api')
 export class WorldcupController {
+  private readonly logger = new Logger(WorldcupController.name);
+
   constructor(private readonly worldcupService: WorldcupService) {}
 
-  private getSessionUser(req: Request): { discordId: string; username: string } {
+  private getSessionUser(req: Request): { discordId: string; username: string; avatar: string } {
     const sessionCookie = req.cookies?.['penca-session'];
 
     if (!sessionCookie) {
       throw new UnauthorizedException('Debes iniciar sesion para continuar.');
     }
 
-    let sessionUser: { discordId?: string; username?: string } | null = null;
+    let sessionUser: { discordId?: string; username?: string; avatar?: string } | null = null;
 
     try {
       sessionUser = JSON.parse(sessionCookie);
@@ -28,6 +30,7 @@ export class WorldcupController {
     return {
       discordId: sessionUser.discordId,
       username: sessionUser.username,
+      avatar: sessionUser.avatar ?? '',
     };
   }
 
@@ -49,9 +52,19 @@ export class WorldcupController {
       throw new BadRequestException('Payload invalido.');
     }
 
+    this.logger.debug(
+      `saveDraftPrediction incoming ${JSON.stringify({
+        discordId: sessionUser.discordId,
+        username: sessionUser.username,
+        avatar: sessionUser.avatar,
+        body,
+      })}`,
+    );
+
     const saved = await this.worldcupService.saveDraftPrediction({
       discordId: sessionUser.discordId,
       username: sessionUser.username,
+      avatar: sessionUser.avatar,
       payload: body as Record<string, unknown>,
     });
 
@@ -69,9 +82,19 @@ export class WorldcupController {
       throw new BadRequestException('Payload invalido.');
     }
 
+    this.logger.debug(
+      `savePrediction incoming ${JSON.stringify({
+        discordId: sessionUser.discordId,
+        username: sessionUser.username,
+        avatar: sessionUser.avatar,
+        body,
+      })}`,
+    );
+
     const saved = await this.worldcupService.savePrediction({
       discordId: sessionUser.discordId,
       username: sessionUser.username,
+      avatar: sessionUser.avatar,
       payload: body as Record<string, unknown>,
     });
 

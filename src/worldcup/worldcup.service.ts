@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { COUNTRIES, MATCHES, USERS, type Country, type Match, type User } from './worldcup.seed';
@@ -43,6 +43,7 @@ type PredictionDraftPayload = {
 type StoredPrediction = {
   discordId: string;
   username: string;
+  avatar: string;
   payload: PredictionDraftPayload;
   points: number;
   createdAt: string;
@@ -70,6 +71,7 @@ type PredictionRecord = {
   _id?: unknown;
   discordId: string;
   username: string;
+  avatar?: string;
   payload: PredictionDraftPayload;
   points?: number;
   createdAt?: Date;
@@ -91,6 +93,8 @@ type OfficialResultsPayload = {
 
 @Injectable()
 export class WorldcupService {
+  private readonly logger = new Logger(WorldcupService.name);
+
   private readonly countries = COUNTRIES;
   private readonly usersByDiscordId = new Map(USERS.map((user) => [user.discordId, user]));
   private readonly matches = MATCHES;
@@ -204,11 +208,12 @@ export class WorldcupService {
 
   private mapPredictionToUserView(record: PredictionRecord): UserView {
     const seedUser = this.usersByDiscordId.get(record.discordId);
+    const avatar = record.avatar?.trim() || seedUser?.avatar || '';
 
     return {
       discordId: record.discordId,
       username: record.username,
-      avatar: seedUser?.avatar ?? '',
+      avatar,
       countryCode: seedUser?.countryCode ?? '',
       points: record.points ?? 0,
       country: seedUser ? this.countries.find((country) => country.code === seedUser.countryCode) ?? null : null,
@@ -221,6 +226,30 @@ export class WorldcupService {
       .sort({ points: -1, updatedAt: 1, username: 1 })
       .lean<PredictionRecord[]>()
       .exec();
+
+    const updates = records
+      .map((record) => {
+        const seedUser = this.usersByDiscordId.get(record.discordId);
+        const avatar = record.avatar?.trim() || seedUser?.avatar || '';
+
+        if (!avatar || record.avatar === avatar) {
+          return null;
+        }
+
+        return {
+          updateOne: {
+            filter: { discordId: record.discordId },
+            update: {
+              $set: { avatar },
+            },
+          },
+        };
+      })
+      .filter((operation): operation is { updateOne: { filter: { discordId: string }; update: { $set: { avatar: string } } } } => operation !== null);
+
+    if (updates.length) {
+      await this.predictionModel.collection.bulkWrite(updates);
+    }
 
     return records.map((record) => this.mapPredictionToUserView(record));
   }
@@ -578,6 +607,7 @@ export class WorldcupService {
     return {
       discordId: record.discordId,
       username: record.username,
+      avatar: record.avatar ?? '',
       payload: record.payload ?? {},
       points: record.points ?? 0,
       createdAt: this.toIsoDate(record.createdAt),
@@ -747,16 +777,31 @@ export class WorldcupService {
   private async upsertPrediction(input: {
     discordId: string;
     username: string;
+    avatar: string;
     payload: PredictionDraftPayload;
   }): Promise<StoredPrediction> {
     const now = new Date();
     const existing = await this.predictionModel.findOne({ discordId: input.discordId }).lean<PredictionRecord>().exec();
     const officialResults = this.mapOfficialResultRecord(await this.readOfficialResultsRecord());
+    const seedUser = this.usersByDiscordId.get(input.discordId);
+    const resolvedAvatar = input.avatar?.trim() || existing?.avatar?.trim() || seedUser?.avatar || '';
 
     const mergedPayload: PredictionDraftPayload = {
       ...(existing?.payload ?? {}),
       ...input.payload,
     };
+
+    this.logger.debug(
+      `upsertPrediction ${JSON.stringify({
+        discordId: input.discordId,
+        username: input.username,
+        incomingAvatar: input.avatar,
+        existingAvatar: existing?.avatar ?? '',
+        resolvedAvatar,
+        mergedPayload,
+        points: this.calculatePoints(mergedPayload, officialResults),
+      })}`,
+    );
 
     const points = this.calculatePoints(mergedPayload, officialResults);
 
@@ -766,6 +811,7 @@ export class WorldcupService {
         {
           $set: {
             username: input.username,
+            avatar: resolvedAvatar,
             payload: mergedPayload,
             points,
             updatedAt: now,
@@ -813,12 +859,14 @@ export class WorldcupService {
   async saveDraftPrediction(input: {
     discordId: string;
     username: string;
+    avatar: string;
     payload: Record<string, unknown>;
   }): Promise<StoredPrediction> {
     const validatedPayload = this.validateDraftPayload(input.payload);
     return this.upsertPrediction({
       discordId: input.discordId,
       username: input.username,
+      avatar: input.avatar,
       payload: validatedPayload,
     });
   }
@@ -826,12 +874,14 @@ export class WorldcupService {
   async savePrediction(input: {
     discordId: string;
     username: string;
+    avatar: string;
     payload: Record<string, unknown>;
   }): Promise<StoredPrediction> {
     const validatedPayload = this.validatePayload(input.payload);
     const saved = await this.upsertPrediction({
       discordId: input.discordId,
       username: input.username,
+      avatar: input.avatar,
       payload: validatedPayload,
     });
 

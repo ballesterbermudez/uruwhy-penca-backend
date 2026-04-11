@@ -6,16 +6,19 @@ export type PredictionDocument = HydratedDocument<Prediction>;
 @Schema({ collection: 'predictions', timestamps: true })
 export class Prediction {
   @Prop({ required: true, unique: true, index: true })
-  discordId: string;
+  discordId!: string;
 
   @Prop({ required: true })
-  username: string;
+  username!: string;
+
+  @Prop({ required: false, default: '' })
+  avatar!: string;
 
   @Prop({ type: MongooseSchema.Types.Mixed, required: true })
-  payload: Record<string, unknown>;
+  payload!: Record<string, unknown>;
 
   @Prop({ required: true, default: 0, min: 0 })
-  points: number;
+  points!: number;
 }
 
 export const PredictionSchema = SchemaFactory.createForClass(Prediction);
