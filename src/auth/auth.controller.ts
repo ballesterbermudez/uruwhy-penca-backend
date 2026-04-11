@@ -1,5 +1,6 @@
 import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import type { CookieOptions } from 'express';
 import type { Response } from 'express';
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
@@ -12,6 +13,18 @@ const resolveFrontendUrl = (): string => {
   }
 
   return 'http://localhost:4321';
+};
+
+const getSessionCookieOptions = (): CookieOptions => {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
 };
 
 @Controller('auth')
@@ -29,13 +42,7 @@ export class AuthController {
   @UseGuards(AuthGuard('discord'))
   async discordCallback(@Req() req, @Res() res: Response) {
     // Guardar info del usuario en la cookie
-    res.cookie('penca-session', JSON.stringify(req.user), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
-    });
+    res.cookie('penca-session', JSON.stringify(req.user), getSessionCookieOptions());
     
     // Redirect to frontend home
     res.redirect(resolveFrontendUrl());
@@ -59,12 +66,9 @@ export class AuthController {
   // 🚪 logout
   @Get('logout')
   logout(@Res() res: Response): void {
-    res.clearCookie('penca-session', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-    });
+    const { maxAge, ...clearOptions } = getSessionCookieOptions();
+    void maxAge;
+    res.clearCookie('penca-session', clearOptions);
     res.json({ message: 'Logged out' });
   }
 }
