@@ -23,22 +23,38 @@ const parseCsvEnv = (value: string | undefined): string[] => {
     .filter((item) => item.length > 0);
 };
 
+const normalizeOrigin = (origin: string): string => origin.trim().replace(/\/$/, '');
+
+const isAllowedOrigin = (origin: string, allowedOrigins: Set<string>): boolean => {
+  const normalizedOrigin = normalizeOrigin(origin);
+
+  if (allowedOrigins.has(normalizedOrigin)) {
+    return true;
+  }
+
+  if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(normalizedOrigin)) {
+    return true;
+  }
+
+  return false;
+};
+
 const configureHttpApp = (app: Awaited<ReturnType<typeof NestFactory.create>>) => {
   const allowedOrigins = new Set<string>([
-    ...localhostOrigins,
-    ...parseCsvEnv(process.env.FRONTEND_URL),
-    ...parseCsvEnv(process.env.ALLOWED_ORIGINS),
+    ...localhostOrigins.map((origin) => normalizeOrigin(origin)),
+    ...parseCsvEnv(process.env.FRONTEND_URL).map((origin) => normalizeOrigin(origin)),
+    ...parseCsvEnv(process.env.ALLOWED_ORIGINS).map((origin) => normalizeOrigin(origin)),
   ]);
 
   if (process.env.VERCEL_URL) {
-    allowedOrigins.add(`https://${process.env.VERCEL_URL}`);
+    allowedOrigins.add(normalizeOrigin(`https://${process.env.VERCEL_URL}`));
   }
 
   app.use(cookieParser());
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has(origin)) {
+      if (!origin || isAllowedOrigin(origin, allowedOrigins)) {
         callback(null, true);
         return;
       }
