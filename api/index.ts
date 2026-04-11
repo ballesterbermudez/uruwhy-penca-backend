@@ -1,9 +1,15 @@
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import express from 'express';
 import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import passport from 'passport';
+import { AppModule } from '../src/app.module';
+
+dotenv.config();
+
+let cachedHandler: ((req: unknown, res: unknown) => void) | null = null;
 
 const localhostOrigins = [
   'http://localhost:4321',
@@ -64,11 +70,22 @@ const configureHttpApp = (app: Awaited<ReturnType<typeof NestFactory.create>>) =
   app.use(passport.session());
 };
 
-async function bootstrap() {
-  dotenv.config();
-  const app = await NestFactory.create(AppModule);
+async function getHandler() {
+  if (cachedHandler) {
+    return cachedHandler;
+  }
+
+  const expressApp = express();
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(expressApp));
 
   configureHttpApp(app);
-  await app.listen(process.env.PORT ?? 3000);
+  await app.init();
+
+  cachedHandler = expressApp;
+  return cachedHandler;
 }
-bootstrap();
+
+export default async function handler(req: unknown, res: unknown) {
+  const appHandler = await getHandler();
+  return appHandler(req, res);
+}
