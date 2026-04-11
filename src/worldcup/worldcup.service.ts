@@ -791,6 +791,8 @@ export class WorldcupService {
       ...input.payload,
     };
 
+    const points = this.calculatePoints(mergedPayload, officialResults);
+
     this.logger.debug(
       `upsertPrediction ${JSON.stringify({
         discordId: input.discordId,
@@ -799,11 +801,9 @@ export class WorldcupService {
         existingAvatar: existing?.avatar ?? '',
         resolvedAvatar,
         mergedPayload,
-        points: this.calculatePoints(mergedPayload, officialResults),
+        points,
       })}`,
     );
-
-    const points = this.calculatePoints(mergedPayload, officialResults);
 
     await this.predictionModel
       .updateOne(
