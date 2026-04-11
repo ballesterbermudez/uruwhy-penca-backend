@@ -169,20 +169,34 @@ export class WorldcupService {
     this.knockoutStages.forEach((stage) => {
       const predictedCodes = payload.knockout?.[stage] ?? [];
       const officialCodes = officialResults.knockout[stage] ?? [];
+      const remaining = new Map<string, number>();
 
-      for (let index = 0; index < officialCodes.length; index += 1) {
-        const officialCode = this.normalizeCode(officialCodes[index]);
+      officialCodes.forEach((code) => {
+        const normalized = this.normalizeCode(code);
 
-        if (!officialCode) {
-          continue;
+        if (!normalized) {
+          return;
         }
 
-        const predictedCode = this.normalizeCode(predictedCodes[index]);
+        remaining.set(normalized, (remaining.get(normalized) ?? 0) + 1);
+      });
 
-        if (predictedCode && predictedCode === officialCode) {
-          points += 1;
+      predictedCodes.forEach((code) => {
+        const normalized = this.normalizeCode(code);
+
+        if (!normalized) {
+          return;
         }
-      }
+
+        const current = remaining.get(normalized) ?? 0;
+
+        if (current <= 0) {
+          return;
+        }
+
+        points += 1;
+        remaining.set(normalized, current - 1);
+      });
     });
 
     return points;

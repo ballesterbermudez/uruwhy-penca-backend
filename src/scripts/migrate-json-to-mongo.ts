@@ -82,18 +82,34 @@ function calculatePoints(payload: Record<string, unknown>, official: OfficialRes
   KNOCKOUT_STAGES.forEach((stage) => {
     const predicted = knockout[stage] ?? [];
     const officialCodes = official.knockout[stage] ?? [];
+    const remaining = new Map<string, number>();
 
-    for (let index = 0; index < officialCodes.length; index += 1) {
-      const officialCode = normalizeCode(officialCodes[index]);
+    officialCodes.forEach((code) => {
+      const normalized = normalizeCode(code);
 
-      if (!officialCode) {
-        continue;
+      if (!normalized) {
+        return;
       }
 
-      if (normalizeCode(predicted[index]) === officialCode) {
-        points += 1;
+      remaining.set(normalized, (remaining.get(normalized) ?? 0) + 1);
+    });
+
+    predicted.forEach((code) => {
+      const normalized = normalizeCode(code);
+
+      if (!normalized) {
+        return;
       }
-    }
+
+      const current = remaining.get(normalized) ?? 0;
+
+      if (current <= 0) {
+        return;
+      }
+
+      points += 1;
+      remaining.set(normalized, current - 1);
+    });
   });
 
   return points;
