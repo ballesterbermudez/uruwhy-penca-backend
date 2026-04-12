@@ -37,6 +37,13 @@ type KnockoutDraftPrediction = {
 
 type PredictionDraftPayload = {
   groupOrder?: GroupOrder;
+  selectedThirds?: string[];
+  knockout?: KnockoutDraftPrediction;
+};
+
+type PredictionSubmissionPayload = {
+  groupOrder: GroupOrder;
+  selectedThirds: string[];
   knockout?: KnockoutDraftPrediction;
 };
 
@@ -337,16 +344,79 @@ export class WorldcupService {
     return Array.isArray(value) && value.length === expectedLength && value.every((item) => item === null || (typeof item === 'string' && item.length > 0));
   }
 
-  private validatePayload(payload: Record<string, unknown>): PredictionPayload {
+  private getThirdPlaceCodes(groupOrder: GroupOrder): Set<string> {
+    const thirdPlaceCodes = new Set<string>();
+
+    this.groupNames.forEach((groupName) => {
+      const code = this.normalizeCode(groupOrder[groupName]?.[2]);
+
+      if (code) {
+        thirdPlaceCodes.add(code);
+      }
+    });
+
+    return thirdPlaceCodes;
+  }
+
+  private validateSelectedThirds(value: unknown, options?: { required?: boolean; exactCount?: number }): string[] | undefined {
+    if (value === undefined) {
+      if (options?.required) {
+        throw new BadRequestException('selectedThirds es obligatorio.');
+      }
+
+      return undefined;
+    }
+
+    if (!Array.isArray(value)) {
+      throw new BadRequestException('selectedThirds es invalido.');
+    }
+
+    const selectedThirds = value.map((code) => {
+      const normalized = this.normalizeCode(code as string | null | undefined);
+
+      if (!normalized) {
+        throw new BadRequestException('selectedThirds es invalido.');
+      }
+
+      return normalized;
+    });
+
+    const unique = new Set(selectedThirds);
+
+    if (unique.size !== selectedThirds.length) {
+      throw new BadRequestException('selectedThirds tiene codigos repetidos.');
+    }
+
+    const exactCount = options?.exactCount;
+
+    if (typeof exactCount === 'number' && selectedThirds.length !== exactCount) {
+      throw new BadRequestException(`selectedThirds debe tener exactamente ${exactCount} codigos.`);
+    }
+
+    if (selectedThirds.length > 8) {
+      throw new BadRequestException('selectedThirds no puede tener mas de 8 codigos.');
+    }
+
+    return selectedThirds;
+  }
+
+  private ensureSelectedThirdsBelongToGroups(selectedThirds: string[], groupOrder: GroupOrder): void {
+    const allowedThirds = this.getThirdPlaceCodes(groupOrder);
+
+    selectedThirds.forEach((code) => {
+      if (!allowedThirds.has(code)) {
+        throw new BadRequestException(`selectedThirds contiene un codigo invalido: ${code}.`);
+      }
+    });
+  }
+
+  private validatePayload(payload: Record<string, unknown>): PredictionSubmissionPayload {
     const groupOrderRaw = payload.groupOrder;
     const knockoutRaw = payload.knockout;
+    const selectedThirdsRaw = payload.selectedThirds;
 
     if (!groupOrderRaw || typeof groupOrderRaw !== 'object' || Array.isArray(groupOrderRaw)) {
       throw new BadRequestException('groupOrder es invalido.');
-    }
-
-    if (!knockoutRaw || typeof knockoutRaw !== 'object' || Array.isArray(knockoutRaw)) {
-      throw new BadRequestException('knockout es invalido.');
     }
 
     const groupOrder = groupOrderRaw as Record<string, unknown>;
@@ -372,38 +442,19 @@ export class WorldcupService {
       });
     });
 
-    const knockout = knockoutRaw as Record<string, unknown>;
-    const normalizedKnockout: KnockoutPrediction = {
-      r32: [],
-      r16: [],
-      qf: [],
-      sf: [],
-      final: [],
-      champion: [],
-    };
+    const selectedThirds = this.validateSelectedThirds(selectedThirdsRaw, {
+      required: true,
+      exactCount: 8,
+    }) as string[];
 
-    const knockoutShape: Array<{ key: keyof KnockoutPrediction; size: number }> = [
-      { key: 'r32', size: 32 },
-      { key: 'r16', size: 16 },
-      { key: 'qf', size: 8 },
-      { key: 'sf', size: 4 },
-      { key: 'final', size: 2 },
-      { key: 'champion', size: 1 },
-    ];
+    this.ensureSelectedThirdsBelongToGroups(selectedThirds, groupOrder as GroupOrder);
 
-    knockoutShape.forEach(({ key, size }) => {
-      const value = knockout[key];
-
-      if (!this.isStringArrayWithLength(value, size)) {
-        throw new BadRequestException(`Ronda invalida: ${key}.`);
-      }
-
-      normalizedKnockout[key] = value;
-    });
+    const normalizedKnockout = knockoutRaw === undefined ? undefined : this.validateDraftKnockout(knockoutRaw);
 
     return {
       groupOrder: groupOrder as GroupOrder,
-      knockout: normalizedKnockout,
+      selectedThirds,
+      ...(normalizedKnockout ? { knockout: normalizedKnockout } : {}),
     };
   }
 
@@ -478,14 +529,20 @@ export class WorldcupService {
 
   private validateDraftPayload(payload: Record<string, unknown>): PredictionDraftPayload {
     const groupOrder = this.validateDraftGroupOrder(payload.groupOrder);
+    const selectedThirds = this.validateSelectedThirds(payload.selectedThirds);
     const knockout = this.validateDraftKnockout(payload.knockout);
 
-    if (!groupOrder && !knockout) {
-      throw new BadRequestException('Debes enviar groupOrder, knockout o ambos.');
+    if (groupOrder && selectedThirds) {
+      this.ensureSelectedThirdsBelongToGroups(selectedThirds, groupOrder);
+    }
+
+    if (!groupOrder && !selectedThirds && !knockout) {
+      throw new BadRequestException('Debes enviar groupOrder, selectedThirds, knockout o alguna combinacion.');
     }
 
     return {
       ...(groupOrder ? { groupOrder } : {}),
+      ...(selectedThirds ? { selectedThirds } : {}),
       ...(knockout ? { knockout } : {}),
     };
   }
@@ -688,24 +745,40 @@ export class WorldcupService {
     return this.truncateText(lines.join('\n'), 1024);
   }
 
-  private formatKnockoutSummary(knockout: KnockoutPrediction): string {
+  private formatSelectedThirdsSummary(selectedThirds: string[]): string {
+    return this.truncateText(selectedThirds.map((code) => this.getCountryLabel(code)).join(' | '), 1024);
+  }
+
+  private formatKnockoutSummary(knockout: KnockoutDraftPrediction): string {
     const summaryLines = this.knockoutStages.map((stageKey) => {
       const picks = knockout[stageKey] ?? [];
+      const validPicks = picks.filter((code): code is string => typeof code === 'string' && code.length > 0);
       const preview = picks
         .slice(0, stageKey === 'r32' ? 6 : stageKey === 'r16' ? 4 : 2)
+        .filter((code): code is string => typeof code === 'string' && code.length > 0)
         .map((code) => this.getCountryLabel(code))
         .join(', ');
 
-      return `${stageKey.toUpperCase()}: ${picks.length} picks${preview ? ` | ${preview}` : ''}`;
+      return `${stageKey.toUpperCase()}: ${validPicks.length} picks${preview ? ` | ${preview}` : ''}`;
     });
 
     return this.truncateText(summaryLines.join('\n'), 1024);
   }
 
+  private hasKnockoutPicks(knockout?: KnockoutDraftPrediction): boolean {
+    if (!knockout) {
+      return false;
+    }
+
+    return this.knockoutStages.some((stageKey) => {
+      return (knockout[stageKey] ?? []).some((code) => typeof code === 'string' && code.length > 0);
+    });
+  }
+
   private async sendPredictionWebhook(input: {
     discordId: string;
     username: string;
-    payload: PredictionPayload;
+    payload: PredictionSubmissionPayload;
     points: number;
     updatedAt: string;
   }): Promise<void> {
@@ -713,8 +786,48 @@ export class WorldcupService {
       return;
     }
 
-    const championCode = input.payload.knockout.champion[0];
+    const hasKnockoutPicks = this.hasKnockoutPicks(input.payload.knockout);
+    const championCode = input.payload.knockout?.champion?.[0];
     const championLabel = championCode ? this.getCountryLabel(championCode) : 'Sin definir';
+    const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+      {
+        name: 'Usuario',
+        value: `${input.username} (${input.discordId})`,
+        inline: true,
+      },
+      {
+        name: 'Puntaje actual',
+        value: `${input.points} pts`,
+        inline: true,
+      },
+      {
+        name: 'Fase de grupos (1-4)',
+        value: this.formatGroupSummary(input.payload.groupOrder),
+      },
+      {
+        name: 'Mejores terceros',
+        value: this.formatSelectedThirdsSummary(input.payload.selectedThirds),
+      },
+    ];
+
+    if (hasKnockoutPicks && input.payload.knockout) {
+      fields.push(
+        {
+          name: 'Campeon elegido',
+          value: championLabel,
+          inline: true,
+        },
+        {
+          name: 'Resumen eliminatoria',
+          value: this.formatKnockoutSummary(input.payload.knockout),
+        },
+      );
+    } else {
+      fields.push({
+        name: 'Eliminatoria',
+        value: 'No enviada. Pendiente de habilitacion.',
+      });
+    }
 
     const body = {
       username: 'Penca Bot',
@@ -723,31 +836,7 @@ export class WorldcupService {
           title: 'Nueva prediccion enviada',
           color: 3447003,
           description: `**${input.username}** acaba de confirmar su prediccion.`,
-          fields: [
-            {
-              name: 'Usuario',
-              value: `${input.username} (${input.discordId})`,
-              inline: true,
-            },
-            {
-              name: 'Puntaje actual',
-              value: `${input.points} pts`,
-              inline: true,
-            },
-            {
-              name: 'Campeon elegido',
-              value: championLabel,
-              inline: true,
-            },
-            {
-              name: 'Fase de grupos (1-4)',
-              value: this.formatGroupSummary(input.payload.groupOrder),
-            },
-            {
-              name: 'Resumen eliminatoria',
-              value: this.formatKnockoutSummary(input.payload.knockout),
-            },
-          ],
+          fields,
           timestamp: input.updatedAt,
           footer: {
             text: 'Penca uruWhy',
