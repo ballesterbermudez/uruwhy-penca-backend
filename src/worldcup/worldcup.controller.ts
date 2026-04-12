@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Put, Req, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
+import { parseSessionUserFromCookie, parseSessionUserFromTransport } from '../auth/session-user.util';
 import { WorldcupService } from './worldcup.service';
 
 @Controller('api')
@@ -9,29 +10,19 @@ export class WorldcupController {
   constructor(private readonly worldcupService: WorldcupService) {}
 
   private getSessionUser(req: Request): { discordId: string; username: string; avatar: string } {
-    const sessionCookie = req.cookies?.['penca-session'];
+    const cookieUser = parseSessionUserFromCookie(req.cookies?.['penca-session']);
 
-    if (!sessionCookie) {
-      throw new UnauthorizedException('Debes iniciar sesion para continuar.');
+    if (cookieUser) {
+      return cookieUser;
     }
 
-    let sessionUser: { discordId?: string; username?: string; avatar?: string } | null = null;
+    const headerUser = parseSessionUserFromTransport(req.get('x-penca-session'));
 
-    try {
-      sessionUser = JSON.parse(sessionCookie);
-    } catch {
-      throw new UnauthorizedException('Sesion invalida. Vuelve a iniciar sesion.');
+    if (headerUser) {
+      return headerUser;
     }
 
-    if (!sessionUser?.discordId || !sessionUser?.username) {
-      throw new UnauthorizedException('Sesion invalida. Vuelve a iniciar sesion.');
-    }
-
-    return {
-      discordId: sessionUser.discordId,
-      username: sessionUser.username,
-      avatar: sessionUser.avatar ?? '',
-    };
+    throw new UnauthorizedException('Debes iniciar sesion para continuar.');
   }
 
   @Get('predictions/me')

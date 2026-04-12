@@ -83,6 +83,7 @@ const configureHttpApp = (app: Awaited<ReturnType<typeof NestFactory.create>>) =
 async function bootstrap() {
   dotenv.config();
   const app = await NestFactory.create(AppModule);
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
   configureHttpApp(app);
   await app.listen(process.env.PORT ?? 3000);

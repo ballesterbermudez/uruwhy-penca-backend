@@ -3,6 +3,7 @@ import { AuthGuard } from '@nestjs/passport';
 import type { CookieOptions } from 'express';
 import type { Request } from 'express';
 import type { Response } from 'express';
+import { encodeSessionUserForTransport, parseSessionUserFromCookie, parseSessionUserFromTransport } from './session-user.util';
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
 
@@ -90,27 +91,43 @@ export class AuthController {
   // 🔥 callback de Discord
   @Get('discord/callback')
   @UseGuards(AuthGuard('discord'))
-  async discordCallback(@Req() req, @Res() res: Response) {
-    // Guardar info del usuario en la cookie
-    res.cookie('penca-session', JSON.stringify(req.user), getSessionCookieOptions());
-    
-    // Redirect to frontend home
-    res.redirect(resolveFrontendUrl());
+  async discordCallback(@Req() req: Request & { user?: unknown }, @Res() res: Response) {
+    const user = req.user as { discordId?: unknown; username?: unknown; avatar?: unknown } | undefined;
+    const sessionUser = {
+      discordId: typeof user?.discordId === 'string' ? user.discordId : '',
+      username: typeof user?.username === 'string' ? user.username : '',
+      avatar: typeof user?.avatar === 'string' ? user.avatar : '',
+    };
+
+    if (!sessionUser.discordId || !sessionUser.username) {
+      res.redirect(resolveFrontendUrl());
+      return;
+    }
+
+    // Guardar info del usuario en la cookie.
+    res.cookie('penca-session', JSON.stringify(sessionUser), getSessionCookieOptions());
+
+    // Fallback para navegadores que bloquean cookies de terceros (ej. Safari iOS).
+    const encodedSession = encodeSessionUserForTransport(sessionUser);
+    res.redirect(`${resolveFrontendUrl()}#penca_session=${encodeURIComponent(encodedSession)}`);
   }
 
   // 👀 ver usuario logueado
   @Get('me')
-  getMe(@Req() req) {
-    const session = req.cookies['penca-session'];
-    if (!session) {
-      return { user: null };
+  getMe(@Req() req: Request) {
+    const cookieUser = parseSessionUserFromCookie(req.cookies?.['penca-session']);
+
+    if (cookieUser) {
+      return { user: cookieUser };
     }
-    try {
-      const user = JSON.parse(session);
-      return { user };
-    } catch (e) {
-      return { user: null };
+
+    const headerUser = parseSessionUserFromTransport(req.get('x-penca-session'));
+
+    if (headerUser) {
+      return { user: headerUser };
     }
+
+    return { user: null };
   }
 
   // 🚪 logout
