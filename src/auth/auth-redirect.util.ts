@@ -3,25 +3,18 @@ import type { Request } from 'express';
 const DEFAULT_REDIRECT_PATH = '/';
 const DEFAULT_FRONTEND_URL = 'http://localhost:4321';
 
+const parseCsvEnv = (value: string | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+};
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
-
-const resolveFrontendUrl = (): string => {
-  const frontendUrl = process.env.FRONTEND_URL;
-
-  if (frontendUrl) {
-    return trimTrailingSlash(frontendUrl);
-  }
-
-  return DEFAULT_FRONTEND_URL;
-};
-
-const getFrontendOrigin = (): string | null => {
-  try {
-    return new URL(resolveFrontendUrl()).origin;
-  } catch {
-    return null;
-  }
-};
 
 const readStringCandidate = (value: unknown): string | undefined => {
   if (typeof value === 'string') {
@@ -35,11 +28,52 @@ const readStringCandidate = (value: unknown): string | undefined => {
   return undefined;
 };
 
+const resolveFrontendCandidates = (): string[] => {
+  const fromFrontendEnv = parseCsvEnv(process.env.FRONTEND_URL).map((url) => trimTrailingSlash(url));
+
+  if (fromFrontendEnv.length > 0) {
+    return fromFrontendEnv;
+  }
+
+  return [DEFAULT_FRONTEND_URL];
+};
+
+const resolvePrimaryFrontendUrl = (): string => {
+  return resolveFrontendCandidates()[0] ?? DEFAULT_FRONTEND_URL;
+};
+
+const resolveAllowedFrontendOrigins = (): Set<string> => {
+  const allowedOrigins = new Set<string>();
+
+  const candidates = [
+    ...resolveFrontendCandidates(),
+    ...parseCsvEnv(process.env.ALLOWED_FRONTEND_ORIGINS),
+    ...parseCsvEnv(process.env.ALLOWED_ORIGINS),
+    'http://localhost:4321',
+    'http://127.0.0.1:4321',
+  ];
+
+  candidates.forEach((candidate) => {
+    try {
+      allowedOrigins.add(new URL(candidate).origin);
+    } catch {
+      return;
+    }
+  });
+
+  return allowedOrigins;
+};
+
+const isAllowedFrontendOrigin = (origin: string): boolean => {
+  return resolveAllowedFrontendOrigins().has(origin);
+};
+
 type RedirectResolutionSource = 'redirectTo' | 'state' | 'referer' | 'fallback';
 
 type RedirectResolutionReason =
   | 'ok-relative'
-  | 'ok-absolute-same-origin'
+  | 'ok-absolute-allowed-origin'
+  | 'ok-from-referer'
   | 'missing-input'
   | 'decode-error'
   | 'invalid-format'
@@ -52,14 +86,15 @@ type RedirectResolutionReason =
 
 export type RedirectResolutionDetails = {
   redirectPath: string;
+  redirectOrigin?: string;
   source: RedirectResolutionSource;
   reason: RedirectResolutionReason;
   rawInput?: string;
   frontendOrigin: string | null;
 };
 
-const normalizeRedirectPathWithDetails = (value: string | undefined): RedirectResolutionDetails => {
-  const frontendOrigin = getFrontendOrigin();
+const normalizeRedirectInput = (value: string | undefined): RedirectResolutionDetails => {
+  const frontendOrigin = new URL(resolvePrimaryFrontendUrl()).origin;
 
   if (!value) {
     return {
@@ -96,20 +131,10 @@ const normalizeRedirectPathWithDetails = (value: string | undefined): RedirectRe
   }
 
   if (/^https?:\/\//i.test(decodedValue)) {
-    if (!frontendOrigin) {
-      return {
-        redirectPath: DEFAULT_REDIRECT_PATH,
-        source: 'fallback',
-        reason: 'frontend-origin-unavailable',
-        rawInput,
-        frontendOrigin,
-      };
-    }
-
     try {
       const parsedUrl = new URL(decodedValue);
 
-      if (parsedUrl.origin !== frontendOrigin) {
+      if (!isAllowedFrontendOrigin(parsedUrl.origin)) {
         return {
           redirectPath: DEFAULT_REDIRECT_PATH,
           source: 'fallback',
@@ -123,8 +148,9 @@ const normalizeRedirectPathWithDetails = (value: string | undefined): RedirectRe
 
       return {
         redirectPath,
+        redirectOrigin: parsedUrl.origin,
         source: 'fallback',
-        reason: 'ok-absolute-same-origin',
+        reason: 'ok-absolute-allowed-origin',
         rawInput,
         frontendOrigin,
       };
@@ -159,14 +185,15 @@ const normalizeRedirectPathWithDetails = (value: string | undefined): RedirectRe
 };
 
 export const normalizeRedirectPath = (value: string | undefined): string => {
-  return normalizeRedirectPathWithDetails(value).redirectPath;
+  return normalizeRedirectInput(value).redirectPath;
 };
 
 export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectResolutionDetails => {
   const redirectToQueryValue = readStringCandidate(req.query?.redirectTo);
 
   if (redirectToQueryValue) {
-    const details = normalizeRedirectPathWithDetails(redirectToQueryValue);
+    const details = normalizeRedirectInput(redirectToQueryValue);
+
     return {
       ...details,
       source: 'redirectTo',
@@ -176,7 +203,8 @@ export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectRes
   const stateQueryValue = readStringCandidate(req.query?.state);
 
   if (stateQueryValue) {
-    const details = normalizeRedirectPathWithDetails(stateQueryValue);
+    const details = normalizeRedirectInput(stateQueryValue);
+
     return {
       ...details,
       source: 'state',
@@ -184,24 +212,13 @@ export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectRes
   }
 
   const referer = req.get('referer');
+  const frontendOrigin = new URL(resolvePrimaryFrontendUrl()).origin;
 
   if (!referer) {
     return {
       redirectPath: DEFAULT_REDIRECT_PATH,
       source: 'fallback',
       reason: 'referer-missing',
-      frontendOrigin: getFrontendOrigin(),
-    };
-  }
-
-  const frontendOrigin = getFrontendOrigin();
-
-  if (!frontendOrigin) {
-    return {
-      redirectPath: DEFAULT_REDIRECT_PATH,
-      source: 'fallback',
-      reason: 'frontend-origin-unavailable',
-      rawInput: referer,
       frontendOrigin,
     };
   }
@@ -209,7 +226,7 @@ export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectRes
   try {
     const refererUrl = new URL(referer);
 
-    if (refererUrl.origin !== frontendOrigin) {
+    if (!isAllowedFrontendOrigin(refererUrl.origin)) {
       return {
         redirectPath: DEFAULT_REDIRECT_PATH,
         source: 'referer',
@@ -219,11 +236,13 @@ export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectRes
       };
     }
 
-    const details = normalizeRedirectPathWithDetails(`${refererUrl.pathname}${refererUrl.search}${refererUrl.hash}`);
-
     return {
-      ...details,
+      redirectPath: `${refererUrl.pathname}${refererUrl.search}${refererUrl.hash}` || DEFAULT_REDIRECT_PATH,
+      redirectOrigin: refererUrl.origin,
       source: 'referer',
+      reason: 'ok-from-referer',
+      rawInput: referer,
+      frontendOrigin,
     };
   } catch {
     return {
@@ -240,10 +259,27 @@ export const resolveRedirectPathFromRequest = (req: Request): string => {
   return resolveRedirectPathDetailsFromRequest(req).redirectPath;
 };
 
-export const resolveFrontendUrlForRedirect = (): string => resolveFrontendUrl();
+export const resolveOAuthStateFromRequest = (req: Request): string => {
+  const details = resolveRedirectPathDetailsFromRequest(req);
 
-export const buildFrontendRedirectUrl = (redirectPath: string, encodedSession?: string): string => {
-  const targetUrl = new URL(normalizeRedirectPath(redirectPath), `${resolveFrontendUrl()}/`);
+  if (details.redirectOrigin) {
+    return `${details.redirectOrigin}${details.redirectPath}`;
+  }
+
+  return details.redirectPath;
+};
+
+export const buildFrontendRedirectUrl = (
+  redirectPath: string,
+  encodedSession?: string,
+  redirectOrigin?: string,
+): string => {
+  const baseOrigin =
+    redirectOrigin && isAllowedFrontendOrigin(redirectOrigin)
+      ? redirectOrigin
+      : new URL(resolvePrimaryFrontendUrl()).origin;
+
+  const targetUrl = new URL(normalizeRedirectPath(redirectPath), `${baseOrigin}/`);
 
   if (!encodedSession) {
     return targetUrl.toString();

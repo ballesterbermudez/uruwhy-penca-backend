@@ -88,7 +88,7 @@ export class AuthController {
 
     if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
       this.logger.log(
-        `OAuth callback redirect source=${redirectDetails.source} reason=${redirectDetails.reason} path=${redirectPath} state=${JSON.stringify(req.query?.state)} redirectTo=${JSON.stringify(req.query?.redirectTo)} referer=${JSON.stringify(req.get('referer'))} frontendOrigin=${JSON.stringify(redirectDetails.frontendOrigin)}`,
+        `OAuth callback redirect source=${redirectDetails.source} reason=${redirectDetails.reason} path=${redirectPath} origin=${JSON.stringify(redirectDetails.redirectOrigin)} state=${JSON.stringify(req.query?.state)} redirectTo=${JSON.stringify(req.query?.redirectTo)} referer=${JSON.stringify(req.get('referer'))} frontendOrigin=${JSON.stringify(redirectDetails.frontendOrigin)}`,
       );
     }
 
@@ -100,7 +100,7 @@ export class AuthController {
     };
 
     if (!sessionUser.discordId || !sessionUser.username) {
-      const targetUrl = buildFrontendRedirectUrl(redirectPath);
+      const targetUrl = buildFrontendRedirectUrl(redirectPath, undefined, redirectDetails.redirectOrigin);
 
       if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
         this.logger.warn(`OAuth callback missing user, redirecting to ${targetUrl}`);
@@ -115,7 +115,7 @@ export class AuthController {
 
     // Fallback para navegadores que bloquean cookies de terceros (ej. Safari iOS).
     const encodedSession = encodeSessionUserForTransport(sessionUser);
-    const targetUrl = buildFrontendRedirectUrl(redirectPath, encodedSession);
+    const targetUrl = buildFrontendRedirectUrl(redirectPath, encodedSession, redirectDetails.redirectOrigin);
 
     if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
       this.logger.log(`OAuth callback success, redirecting discordId=${sessionUser.discordId} to ${targetUrl}`);

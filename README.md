@@ -47,6 +47,24 @@ Notes:
 - `DB_URI` is required.
 - `DB_NAME` is optional, defaults to `penca`.
 
+## Frontend origins
+
+This backend accepts multiple frontend origins for CORS and OAuth redirects.
+
+Required or recommended `.env` variables:
+
+```env
+FRONTEND_URL=https://uruwhy-penca-front.vercel.app,http://localhost:4321
+ALLOWED_FRONTEND_ORIGINS=https://uruwhy-penca-front.vercel.app,http://localhost:4321
+```
+
+Notes:
+
+- Use `FRONTEND_URL` as the canonical frontend list for OAuth redirects.
+- Use `ALLOWED_FRONTEND_ORIGINS` to explicitly allow the same origins in CORS.
+- Both variables accept a comma-separated list.
+- `http://localhost:4321` is the local frontend origin for development.
+
 ## One-time migration from JSON files
 
 The previous JSON files can be migrated into MongoDB with:

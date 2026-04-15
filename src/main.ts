@@ -43,6 +43,7 @@ const configureHttpApp = (app: Awaited<ReturnType<typeof NestFactory.create>>) =
   const allowedOrigins = new Set<string>([
     ...localhostOrigins.map((origin) => normalizeOrigin(origin)),
     ...parseCsvEnv(process.env.FRONTEND_URL).map((origin) => normalizeOrigin(origin)),
+    ...parseCsvEnv(process.env.ALLOWED_FRONTEND_ORIGINS).map((origin) => normalizeOrigin(origin)),
     ...parseCsvEnv(process.env.ALLOWED_ORIGINS).map((origin) => normalizeOrigin(origin)),
   ]);
 
