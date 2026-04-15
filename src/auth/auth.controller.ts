@@ -3,19 +3,9 @@ import { AuthGuard } from '@nestjs/passport';
 import type { CookieOptions } from 'express';
 import type { Request } from 'express';
 import type { Response } from 'express';
+import { buildFrontendRedirectUrl, resolveRedirectPathFromRequest } from './auth-redirect.util';
+import { DiscordAuthGuard } from './discord-auth.guard';
 import { encodeSessionUserForTransport, parseSessionUserFromCookie, parseSessionUserFromTransport } from './session-user.util';
-
-const trimTrailingSlash = (value: string): string => value.replace(/\/$/, '');
-
-const resolveFrontendUrl = (): string => {
-  const frontendUrl = process.env.FRONTEND_URL;
-
-  if (frontendUrl) {
-    return trimTrailingSlash(frontendUrl);
-  }
-
-  return 'http://localhost:4321';
-};
 
 const getSessionCookieOptions = (): CookieOptions => {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -83,7 +73,7 @@ export class AuthController {
 
   // 🔥 redirect a Discord
   @Get('discord')
-  @UseGuards(AuthGuard('discord'))
+  @UseGuards(DiscordAuthGuard)
   async discordLogin() {
     // no hace nada, redirige automáticamente
   }
@@ -92,6 +82,7 @@ export class AuthController {
   @Get('discord/callback')
   @UseGuards(AuthGuard('discord'))
   async discordCallback(@Req() req: Request & { user?: unknown }, @Res() res: Response) {
+    const redirectPath = resolveRedirectPathFromRequest(req);
     const user = req.user as { discordId?: unknown; username?: unknown; avatar?: unknown } | undefined;
     const sessionUser = {
       discordId: typeof user?.discordId === 'string' ? user.discordId : '',
@@ -100,7 +91,7 @@ export class AuthController {
     };
 
     if (!sessionUser.discordId || !sessionUser.username) {
-      res.redirect(resolveFrontendUrl());
+      res.redirect(buildFrontendRedirectUrl(redirectPath));
       return;
     }
 
@@ -109,7 +100,7 @@ export class AuthController {
 
     // Fallback para navegadores que bloquean cookies de terceros (ej. Safari iOS).
     const encodedSession = encodeSessionUserForTransport(sessionUser);
-    res.redirect(`${resolveFrontendUrl()}#penca_session=${encodeURIComponent(encodedSession)}`);
+    res.redirect(buildFrontendRedirectUrl(redirectPath, encodedSession));
   }
 
   // 👀 ver usuario logueado
