@@ -1,9 +1,9 @@
-import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import type { CookieOptions } from 'express';
 import type { Request } from 'express';
 import type { Response } from 'express';
-import { buildFrontendRedirectUrl, resolveRedirectPathFromRequest } from './auth-redirect.util';
+import { buildFrontendRedirectUrl, resolveRedirectPathDetailsFromRequest } from './auth-redirect.util';
 import { DiscordAuthGuard } from './discord-auth.guard';
 import { encodeSessionUserForTransport, parseSessionUserFromCookie, parseSessionUserFromTransport } from './session-user.util';
 
@@ -70,6 +70,7 @@ const clearCookieEverywhere = (req: Request, res: Response, name: string) => {
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
 
   // 🔥 redirect a Discord
   @Get('discord')
@@ -82,7 +83,15 @@ export class AuthController {
   @Get('discord/callback')
   @UseGuards(AuthGuard('discord'))
   async discordCallback(@Req() req: Request & { user?: unknown }, @Res() res: Response) {
-    const redirectPath = resolveRedirectPathFromRequest(req);
+    const redirectDetails = resolveRedirectPathDetailsFromRequest(req);
+    const redirectPath = redirectDetails.redirectPath;
+
+    if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
+      this.logger.log(
+        `OAuth callback redirect source=${redirectDetails.source} reason=${redirectDetails.reason} path=${redirectPath} state=${JSON.stringify(req.query?.state)} redirectTo=${JSON.stringify(req.query?.redirectTo)} referer=${JSON.stringify(req.get('referer'))} frontendOrigin=${JSON.stringify(redirectDetails.frontendOrigin)}`,
+      );
+    }
+
     const user = req.user as { discordId?: unknown; username?: unknown; avatar?: unknown } | undefined;
     const sessionUser = {
       discordId: typeof user?.discordId === 'string' ? user.discordId : '',
@@ -91,7 +100,13 @@ export class AuthController {
     };
 
     if (!sessionUser.discordId || !sessionUser.username) {
-      res.redirect(buildFrontendRedirectUrl(redirectPath));
+      const targetUrl = buildFrontendRedirectUrl(redirectPath);
+
+      if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
+        this.logger.warn(`OAuth callback missing user, redirecting to ${targetUrl}`);
+      }
+
+      res.redirect(targetUrl);
       return;
     }
 
@@ -100,7 +115,13 @@ export class AuthController {
 
     // Fallback para navegadores que bloquean cookies de terceros (ej. Safari iOS).
     const encodedSession = encodeSessionUserForTransport(sessionUser);
-    res.redirect(buildFrontendRedirectUrl(redirectPath, encodedSession));
+    const targetUrl = buildFrontendRedirectUrl(redirectPath, encodedSession);
+
+    if (process.env.AUTH_REDIRECT_DEBUG === 'true') {
+      this.logger.log(`OAuth callback success, redirecting discordId=${sessionUser.discordId} to ${targetUrl}`);
+    }
+
+    res.redirect(targetUrl);
   }
 
   // 👀 ver usuario logueado

@@ -35,86 +35,209 @@ const readStringCandidate = (value: unknown): string | undefined => {
   return undefined;
 };
 
-export const normalizeRedirectPath = (value: string | undefined): string => {
+type RedirectResolutionSource = 'redirectTo' | 'state' | 'referer' | 'fallback';
+
+type RedirectResolutionReason =
+  | 'ok-relative'
+  | 'ok-absolute-same-origin'
+  | 'missing-input'
+  | 'decode-error'
+  | 'invalid-format'
+  | 'invalid-absolute-url'
+  | 'frontend-origin-unavailable'
+  | 'absolute-origin-mismatch'
+  | 'referer-missing'
+  | 'referer-invalid'
+  | 'referer-origin-mismatch';
+
+export type RedirectResolutionDetails = {
+  redirectPath: string;
+  source: RedirectResolutionSource;
+  reason: RedirectResolutionReason;
+  rawInput?: string;
+  frontendOrigin: string | null;
+};
+
+const normalizeRedirectPathWithDetails = (value: string | undefined): RedirectResolutionDetails => {
+  const frontendOrigin = getFrontendOrigin();
+
   if (!value) {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'missing-input',
+      frontendOrigin,
+    };
   }
 
+  const rawInput = value;
   let decodedValue = value.trim();
 
   try {
     decodedValue = decodeURIComponent(decodedValue);
   } catch {
-    decodedValue = value.trim();
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'decode-error',
+      rawInput,
+      frontendOrigin,
+    };
   }
 
   if (!decodedValue) {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'missing-input',
+      rawInput,
+      frontendOrigin,
+    };
   }
 
   if (/^https?:\/\//i.test(decodedValue)) {
-    const frontendOrigin = getFrontendOrigin();
-
     if (!frontendOrigin) {
-      return DEFAULT_REDIRECT_PATH;
+      return {
+        redirectPath: DEFAULT_REDIRECT_PATH,
+        source: 'fallback',
+        reason: 'frontend-origin-unavailable',
+        rawInput,
+        frontendOrigin,
+      };
     }
 
     try {
       const parsedUrl = new URL(decodedValue);
 
       if (parsedUrl.origin !== frontendOrigin) {
-        return DEFAULT_REDIRECT_PATH;
+        return {
+          redirectPath: DEFAULT_REDIRECT_PATH,
+          source: 'fallback',
+          reason: 'absolute-origin-mismatch',
+          rawInput,
+          frontendOrigin,
+        };
       }
 
-      return `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}` || DEFAULT_REDIRECT_PATH;
+      const redirectPath = `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}` || DEFAULT_REDIRECT_PATH;
+
+      return {
+        redirectPath,
+        source: 'fallback',
+        reason: 'ok-absolute-same-origin',
+        rawInput,
+        frontendOrigin,
+      };
     } catch {
-      return DEFAULT_REDIRECT_PATH;
+      return {
+        redirectPath: DEFAULT_REDIRECT_PATH,
+        source: 'fallback',
+        reason: 'invalid-absolute-url',
+        rawInput,
+        frontendOrigin,
+      };
     }
   }
 
   if (!decodedValue.startsWith('/') || decodedValue.startsWith('//')) {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'invalid-format',
+      rawInput,
+      frontendOrigin,
+    };
   }
 
-  return decodedValue;
+  return {
+    redirectPath: decodedValue,
+    source: 'fallback',
+    reason: 'ok-relative',
+    rawInput,
+    frontendOrigin,
+  };
 };
 
-export const resolveRedirectPathFromRequest = (req: Request): string => {
+export const normalizeRedirectPath = (value: string | undefined): string => {
+  return normalizeRedirectPathWithDetails(value).redirectPath;
+};
+
+export const resolveRedirectPathDetailsFromRequest = (req: Request): RedirectResolutionDetails => {
   const redirectToQueryValue = readStringCandidate(req.query?.redirectTo);
 
   if (redirectToQueryValue) {
-    return normalizeRedirectPath(redirectToQueryValue);
+    const details = normalizeRedirectPathWithDetails(redirectToQueryValue);
+    return {
+      ...details,
+      source: 'redirectTo',
+    };
   }
 
   const stateQueryValue = readStringCandidate(req.query?.state);
 
   if (stateQueryValue) {
-    return normalizeRedirectPath(stateQueryValue);
+    const details = normalizeRedirectPathWithDetails(stateQueryValue);
+    return {
+      ...details,
+      source: 'state',
+    };
   }
 
   const referer = req.get('referer');
 
   if (!referer) {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'referer-missing',
+      frontendOrigin: getFrontendOrigin(),
+    };
   }
 
   const frontendOrigin = getFrontendOrigin();
 
   if (!frontendOrigin) {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'fallback',
+      reason: 'frontend-origin-unavailable',
+      rawInput: referer,
+      frontendOrigin,
+    };
   }
 
   try {
     const refererUrl = new URL(referer);
 
     if (refererUrl.origin !== frontendOrigin) {
-      return DEFAULT_REDIRECT_PATH;
+      return {
+        redirectPath: DEFAULT_REDIRECT_PATH,
+        source: 'referer',
+        reason: 'referer-origin-mismatch',
+        rawInput: referer,
+        frontendOrigin,
+      };
     }
 
-    return normalizeRedirectPath(`${refererUrl.pathname}${refererUrl.search}${refererUrl.hash}`);
+    const details = normalizeRedirectPathWithDetails(`${refererUrl.pathname}${refererUrl.search}${refererUrl.hash}`);
+
+    return {
+      ...details,
+      source: 'referer',
+    };
   } catch {
-    return DEFAULT_REDIRECT_PATH;
+    return {
+      redirectPath: DEFAULT_REDIRECT_PATH,
+      source: 'referer',
+      reason: 'referer-invalid',
+      rawInput: referer,
+      frontendOrigin,
+    };
   }
+};
+
+export const resolveRedirectPathFromRequest = (req: Request): string => {
+  return resolveRedirectPathDetailsFromRequest(req).redirectPath;
 };
 
 export const resolveFrontendUrlForRedirect = (): string => resolveFrontendUrl();
