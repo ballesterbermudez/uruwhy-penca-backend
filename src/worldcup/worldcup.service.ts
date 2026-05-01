@@ -1,6 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { Db, MongoClient } from 'mongodb';
 import { COUNTRIES, MATCHES, USERS, type Country, type Match, type User } from './worldcup.seed';
 import { OfficialResult } from './schemas/official-result.schema';
 import { Prediction } from './schemas/prediction.schema';
@@ -98,6 +100,59 @@ type OfficialResultsPayload = {
   knockout?: OfficialKnockout;
 };
 
+type MemberRoleRecord = {
+  userId?: string;
+  username?: string;
+  avatarUrl?: string;
+  lastUpdated?: string | Date;
+  roles?: Array<string | { name?: unknown }>;
+};
+
+type UruguayDepartmentMember = {
+  userId: string;
+  username: string;
+  avatarUrl: string;
+};
+
+type UruguayDepartmentGroup = {
+  department: string;
+  members: UruguayDepartmentMember[];
+};
+
+const URUGUAY_DEPARTMENTS = [
+  'Artigas',
+  'Canelones',
+  'Cerro Largo',
+  'Colonia',
+  'Durazno',
+  'Flores',
+  'Florida',
+  'Lavalleja',
+  'Maldonado',
+  'Montevideo',
+  'Paysandú',
+  'Río Negro',
+  'Rivera',
+  'Rocha',
+  'Salto',
+  'San José',
+  'Soriano',
+  'Tacuarembó',
+  'Treinta y Tres',
+] as const;
+
+function normalizeDepartmentRole(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+const URUGUAY_DEPARTMENT_LOOKUP = new Map(
+  URUGUAY_DEPARTMENTS.map((department) => [normalizeDepartmentRole(department), department]),
+);
+
 @Injectable()
 export class WorldcupService {
   private readonly logger = new Logger(WorldcupService.name);
@@ -127,10 +182,22 @@ export class WorldcupService {
   private readonly predictionWebhookUrl =
     process.env.DISCORD_PREDICTION_WEBHOOK_URL?.trim() || process.env.DISCORD_WEBHOOK_URL?.trim() || '';
 
+  private usersMongoUri = '';
+
+  private usersMongoDbName = 'users-uruwhy';
+
+  private usersMongoClient: MongoClient | null = null;
+
+  private usersMongoDbPromise: Promise<Db> | null = null;
+
   constructor(
     @InjectModel(Prediction.name) private readonly predictionModel: Model<Prediction>,
     @InjectModel(OfficialResult.name) private readonly officialResultModel: Model<OfficialResult>,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.usersMongoUri = this.configService.get<string>('DB_URI')?.trim() || '';
+    this.usersMongoDbName = this.configService.get<string>('DB_NAME_USERS')?.trim() || 'users-uruwhy';
+  }
 
   getCountries(): Country[] {
     return [...this.countries].sort((left, right) => left.name.localeCompare(right.name));
@@ -279,6 +346,102 @@ export class WorldcupService {
       points: 0,
       country: this.countries.find((country) => country.code === seedUser.countryCode) ?? null,
     };
+  }
+
+  private async getUsersDatabase(): Promise<Db> {
+    if (!this.usersMongoUri) {
+      throw new Error('DB_URI no esta definido en el archivo .env');
+    }
+
+    if (!this.usersMongoClient) {
+      this.usersMongoClient = new MongoClient(this.usersMongoUri);
+    }
+
+    if (!this.usersMongoDbPromise) {
+      this.usersMongoDbPromise = this.usersMongoClient.connect().then((client) => client.db(this.usersMongoDbName));
+    }
+
+    return this.usersMongoDbPromise;
+  }
+
+  private parseUruguayDepartments(roles: unknown): string[] {
+    if (!Array.isArray(roles)) {
+      return [];
+    }
+
+    const matchedDepartments = new Set<string>();
+
+    roles.forEach((role) => {
+      const roleName = typeof role === 'string' ? role : typeof role === 'object' && role !== null ? (role as { name?: unknown }).name : null;
+
+      if (typeof roleName !== 'string') {
+        return;
+      }
+
+      const normalizedRole = normalizeDepartmentRole(roleName);
+      const department = URUGUAY_DEPARTMENT_LOOKUP.get(normalizedRole);
+
+      if (department) {
+        matchedDepartments.add(department);
+      }
+    });
+
+    return [...matchedDepartments];
+  }
+
+  async getUruguayDepartmentMembers(): Promise<UruguayDepartmentGroup[]> {
+    const db = await this.getUsersDatabase();
+    const records = await db
+      .collection<MemberRoleRecord>('member_roles')
+      .find({}, { projection: { userId: 1, username: 1, avatarUrl: 1, lastUpdated: 1, roles: 1 } })
+      .toArray();
+
+    const groupedMembers = new Map<string, UruguayDepartmentMember[]>();
+
+    records.forEach((record) => {
+      const userId = record.userId?.trim() || '';
+      const username = record.username?.trim() || '';
+      const avatarUrl = record.avatarUrl?.trim() || '';
+      const roles = Array.isArray(record.roles)
+        ? record.roles
+            .map((role) => {
+              if (typeof role === 'string') {
+                return role.trim();
+              }
+
+              if (role && typeof role === 'object' && typeof role.name === 'string') {
+                return role.name.trim();
+              }
+
+              return '';
+            })
+            .filter(Boolean)
+        : [];
+      const departments = this.parseUruguayDepartments(roles);
+
+      if (!userId || !username || !avatarUrl || !departments.length) {
+        return;
+      }
+
+      departments.forEach((department) => {
+        const members = groupedMembers.get(department) ?? [];
+
+        members.push({
+          userId,
+          username,
+          avatarUrl,
+        });
+
+        groupedMembers.set(department, members);
+      });
+    });
+
+    return [...groupedMembers.entries()]
+      .map(([department, members]) => ({
+        department,
+        members: members.sort((left, right) => left.username.localeCompare(right.username)),
+      }))
+      .sort((left, right) => left.department.localeCompare(right.department));
   }
 
   getMatches(): MatchView[] {

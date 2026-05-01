@@ -137,6 +137,15 @@ export class WorldcupController {
     return this.worldcupService.getDashboard();
   }
 
+  @Get('uruguay-members')
+  async getUruguayMembers() {
+    const members = await this.worldcupService.getUruguayDepartmentMembers();
+
+    return {
+      members,
+    };
+  }
+
   @Get('users')
   getUsers() {
     return this.worldcupService.getUsers();
